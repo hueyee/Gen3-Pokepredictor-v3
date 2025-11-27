@@ -3,3 +3,9 @@ venv/
 Parquets/
 Models/
 __pycache__/
+*.pyc
+.DS_Store
+*.egg-info/
+dist/
+build/
+.env
