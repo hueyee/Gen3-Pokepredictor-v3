@@ -124,7 +124,7 @@ def split_data_with_validation(df, config):
     test_size = config['test_size']
     validation_size = config['validation_size']
     random_state = config['random_state']
-    models_dir = Path(config['models_dir'])
+    file_path = Path(config['file_path'])
 
     class_counts = df['next_pokemon'].value_counts()
     rare_classes = class_counts[class_counts < 3].index
@@ -154,7 +154,7 @@ def split_data_with_validation(df, config):
     print(f"Test set size: {len(test_df)} ({len(test_df)/len(df)*100:.1f}%)")
     print(f"Validation set size: {len(validation_df)} ({len(validation_df)/len(df)*100:.1f}%)")
 
-    validation_path = models_dir.parent / "processed" / "Parquets" / "validation_pokemon_moves.csv"
+    validation_path = file_path.parent / "validation_pokemon_moves.csv"
     validation_path.parent.mkdir(parents=True, exist_ok=True)
     validation_df.to_csv(validation_path, index=False)
     print(f"Validation set saved to {validation_path}")
@@ -273,7 +273,13 @@ def encode_features(X, categorical_features, numerical_features, encoder=None, f
         
     Returns:
         Tuple of (encoded_features, encoder, feature_names)
+        
+    Raises:
+        ValueError: If fit=False and encoder is None
     """
+    if not fit and encoder is None:
+        raise ValueError('encoder must be provided when fit=False')
+    
     if fit:
         encoder = CustomOneHotEncoder().fit(X, categorical_features)
     

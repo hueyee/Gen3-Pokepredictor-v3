@@ -29,6 +29,7 @@ def get_default_config():
         'confidence_threshold': 0.1,
         'max_propagations': 4,
         'sample_size': 1000,
+        'debug': False,
     }
 
 
@@ -46,6 +47,8 @@ def parse_args():
                         help='Number of samples to evaluate (None for all)')
     parser.add_argument('--no_sample', action='store_true',
                         help='Use all data without sampling')
+    parser.add_argument('--debug', action='store_true',
+                        help='Enable debug mode to trace prediction process')
     return parser.parse_args()
 
 
@@ -58,6 +61,7 @@ def args_to_config(args):
         'confidence_threshold': args.confidence_threshold,
         'max_propagations': defaults['max_propagations'],
         'sample_size': None if args.no_sample else args.sample_size,
+        'debug': args.debug,
     }
 
 def load_latest_models(config):
@@ -657,25 +661,20 @@ def find_first_pokemon_rows(df, n=1):
 
     return filtered.head(n)
 
-def debug_prediction_process(models):
+
+def debug_prediction_process(df, models, config):
     """Debug a full prediction chain on a sample row to identify issues."""
     print("\n===== DEBUGGING PREDICTION PROCESS =====")
 
-
-    debug_df = pd.read_csv(FILE_PATH)
-
-
-    mask = debug_df['p2_number_of_pokemon_revealed'] == 1
+    mask = df['p2_number_of_pokemon_revealed'] == 1
     if mask.sum() > 0:
-        sample_row = debug_df[mask].iloc[0].to_dict()
+        sample_row = df[mask].iloc[0].to_dict()
         print(f"Selected a sample row with 1 Pokemon revealed: {sample_row['p2_pokemon1_name']}")
     else:
-        sample_row = debug_df.iloc[0].to_dict()
+        sample_row = df.iloc[0].to_dict()
         print(f"No rows with exactly 1 Pokemon, using first row with {sample_row['p2_number_of_pokemon_revealed']} revealed")
 
-
     current_state = sample_row.copy()
-
 
     print("\nKey columns in initial state:")
     for idx in range(1, 7):
@@ -685,17 +684,14 @@ def debug_prediction_process(models):
     print(f"p2_number_of_pokemon_revealed: {current_state.get('p2_number_of_pokemon_revealed', 'MISSING')}")
     print(f"turn_id: {current_state.get('turn_id', 'MISSING')}")
 
-
     for pokemon_idx in range(2, 7):
         model_info = models[pokemon_idx]
         print(f"\nModel for Pokemon {pokemon_idx} uses these features:")
         print(f"Categorical features: {model_info['categorical_features']}")
         print(f"Numerical features: {model_info['numerical_features']}")
 
-
     for position_idx in range(2, 7):
         print(f"\n--- Predicting Pokemon at position {position_idx} ---")
-
 
         print("\nCurrent state before prediction:")
         for feature in models[position_idx]['categorical_features'] + models[position_idx]['numerical_features']:
@@ -704,13 +700,11 @@ def debug_prediction_process(models):
             else:
                 print(f"{feature}: MISSING")
 
-
         predictions = predict_next_pokemon(current_state, position_idx, models[position_idx])
         top_predictions = sorted(predictions.items(), key=lambda x: x[1], reverse=True)
         top_pokemon, confidence = top_predictions[0]
 
         print(f"\nTop prediction: {top_pokemon} with {confidence:.4f} confidence")
-
 
         print("\nUpdating state with prediction:")
         prev_state = current_state.copy()
@@ -719,7 +713,6 @@ def debug_prediction_process(models):
         current_state['p2_current_pokemon'] = top_pokemon
         current_state['p2_number_of_pokemon_revealed'] = position_idx
         current_state['turn_id'] = current_state.get('turn_id', 0) + 3
-
 
         print("\nState changes:")
         for key, new_value in current_state.items():
@@ -782,6 +775,9 @@ def main():
 
     print("Loading models...")
     models = load_latest_models(config)
+
+    if config['debug']:
+        debug_prediction_process(df, models, config)
 
     for revealed_count in range(0, 5):
         mask = df['p2_number_of_pokemon_revealed'] == revealed_count
