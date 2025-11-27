@@ -1,7 +1,9 @@
+import argparse
+from pathlib import Path
+
 import pandas as pd
 import numpy as np
 import joblib
-import os
 import glob
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -13,65 +15,66 @@ import networkx as nx
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
+from one_hot_encoder import CustomOneHotEncoder
+
 logging.getLogger('joblib').setLevel(logging.ERROR)
 warnings.filterwarnings('ignore')
 
-FILE_PATH = "./data/processed/Parquets/all_pokemon_moves.csv"
-MODELS_DIR = "./data/models/Models"
-CONFIDENCE_THRESHOLD = 0.1
-MAX_PROPAGATIONS = 4
-SAMPLE_SIZE = 1000
 
-class CustomOneHotEncoder:
-    def __init__(self):
-        self.encoders = {}
-        self.feature_names = []
-        self.n_features = 0
+def get_default_config():
+    """Return default configuration values."""
+    return {
+        'file_path': Path("./data/processed/Parquets/all_pokemon_moves.csv"),
+        'models_dir': Path("./data/models/Models"),
+        'confidence_threshold': 0.1,
+        'max_propagations': 4,
+        'sample_size': 1000,
+    }
 
-    def fit(self, X, categorical_features):
-        self.encoders = {}
-        self.feature_names = []
-        self.n_features = 0
 
-        for feature in categorical_features:
-            unique_values = X[feature].unique()
-            self.encoders[feature] = {value: i for i, value in enumerate(unique_values)}
-            for value in unique_values:
-                self.feature_names.append(f"{feature}_{value}")
-            self.n_features += len(unique_values)
+def parse_args():
+    """Parse command-line arguments."""
+    defaults = get_default_config()
+    parser = argparse.ArgumentParser(description="Test Pokemon prediction models")
+    parser.add_argument('--data_path', type=Path, default=defaults['file_path'],
+                        help='Path to the test data CSV file')
+    parser.add_argument('--models_dir', type=Path, default=defaults['models_dir'],
+                        help='Directory containing trained models')
+    parser.add_argument('--confidence_threshold', type=float, default=defaults['confidence_threshold'],
+                        help='Confidence threshold for predictions')
+    parser.add_argument('--sample_size', type=int, default=defaults['sample_size'],
+                        help='Number of samples to evaluate (None for all)')
+    parser.add_argument('--no_sample', action='store_true',
+                        help='Use all data without sampling')
+    return parser.parse_args()
 
-        return self
 
-    def transform(self, X, categorical_features):
-        n_samples = X.shape[0]
-        encoded = np.zeros((n_samples, self.n_features))
+def args_to_config(args):
+    """Convert parsed arguments to configuration dictionary."""
+    defaults = get_default_config()
+    return {
+        'file_path': args.data_path,
+        'models_dir': args.models_dir,
+        'confidence_threshold': args.confidence_threshold,
+        'max_propagations': defaults['max_propagations'],
+        'sample_size': None if args.no_sample else args.sample_size,
+    }
 
-        current_idx = 0
-        for feature in categorical_features:
-            encoder = self.encoders[feature]
-            for i, value in enumerate(X[feature]):
-                if value in encoder:
-                    encoded[i, current_idx + encoder[value]] = 1
-            current_idx += len(encoder)
-
-        return encoded
-
-    def get_feature_names(self):
-        return self.feature_names
-
-def load_latest_models():
-    model_dirs = sorted(glob.glob(os.path.join(MODELS_DIR, "*")))
+def load_latest_models(config):
+    """Load the latest trained models from the models directory."""
+    models_dir = Path(config['models_dir'])
+    model_dirs = sorted(glob.glob(str(models_dir / "*")))
     if not model_dirs:
-        raise ValueError(f"No model directories found in {MODELS_DIR}")
+        raise ValueError(f"No model directories found in {models_dir}")
 
-    latest_dir = model_dirs[-1]
+    latest_dir = Path(model_dirs[-1])
     print(f"Loading models from directory: {latest_dir}")
 
     models = {}
 
     for pokemon_idx in tqdm.tqdm(range(2, 7), desc="Loading models"):
-        model_path = os.path.join(latest_dir, f"pokemon_prediction_model_{pokemon_idx}.joblib")
-        if os.path.exists(model_path):
+        model_path = latest_dir / f"pokemon_prediction_model_{pokemon_idx}.joblib"
+        if model_path.exists():
             models[pokemon_idx] = joblib.load(model_path)
         else:
             raise ValueError(f"Model for Pokemon {pokemon_idx} not found in {latest_dir}")
@@ -123,11 +126,14 @@ def predict_with_model(features, model_info):
     return result
 
 def predict_next_pokemon(row, pokemon_idx, model_info):
+    """Predict the next Pokemon based on features and model."""
     features = prepare_features(row, pokemon_idx, model_info)
     predictions = predict_with_model(features, model_info)
     return predictions
 
-def propagate_predictions(row, models, start_idx=2):
+
+def propagate_predictions(row, models, start_idx=2, confidence_threshold=0.1):
+    """Propagate predictions through the Pokemon positions."""
     original_row = row.copy()
     results = []
 
@@ -166,7 +172,7 @@ def propagate_predictions(row, models, start_idx=2):
             top_predictions = sorted(direct_predictions.items(), key=lambda x: x[1], reverse=True)
 
             candidate_predictions = [(pokemon, prob) for pokemon, prob in top_predictions
-                                     if prob >= CONFIDENCE_THRESHOLD]
+                                     if prob >= confidence_threshold]
             if not candidate_predictions:
                 candidate_predictions = [top_predictions[0]]
 
@@ -240,7 +246,7 @@ def propagate_predictions(row, models, start_idx=2):
                 top_new_predictions = sorted(new_predictions.items(), key=lambda x: x[1], reverse=True)
 
                 candidate_new_predictions = [(pokemon, prob) for pokemon, prob in top_new_predictions
-                                             if prob >= CONFIDENCE_THRESHOLD]
+                                             if prob >= confidence_threshold]
                 if not candidate_new_predictions:
                     candidate_new_predictions = [top_new_predictions[0]]
 
@@ -332,7 +338,7 @@ def propagate_predictions(row, models, start_idx=2):
                 current_node_id += 1
 
             normalized_candidates = [(pokemon, prob) for pokemon, prob in top_normalized
-                                     if prob >= CONFIDENCE_THRESHOLD]
+                                     if prob >= confidence_threshold]
             if not normalized_candidates:
                 normalized_candidates = [top_normalized[0]]
 
@@ -458,7 +464,10 @@ def create_prediction_visualization(visualization_data, output_path="prediction_
 
     return G
 
-def evaluate_predictions(df, models):
+
+def evaluate_predictions(df, models, config):
+    """Evaluate predictions on the dataset."""
+    confidence_threshold = config['confidence_threshold']
     results = {
         'overall': {
             'correct': 0,
@@ -489,7 +498,9 @@ def evaluate_predictions(df, models):
             start_idx = 2
 
         row_dict = row.to_dict()
-        prediction_results, _ = propagate_predictions(row_dict, models, start_idx)
+        prediction_results, _ = propagate_predictions(
+            row_dict, models, start_idx, confidence_threshold=confidence_threshold
+        )
 
         for result in prediction_results:
             pokemon_idx = result['pokemon_idx']
@@ -529,6 +540,7 @@ def evaluate_predictions(df, models):
             order_results['accuracy'] = order_results['correct'] / order_results['total'] if order_results['total'] > 0 else 0
 
     return results, all_predictions
+
 
 def visualize_results(results, all_predictions):
     plt.figure(figsize=(12, 6))
@@ -717,12 +729,21 @@ def debug_prediction_process(models):
     print("\n===== DEBUG COMPLETE =====")
     return current_state
 
-def main():
-    print("Loading data...")
-    df = pd.read_csv(FILE_PATH)
 
-    if SAMPLE_SIZE is not None:
-        print(f"Sampling {SAMPLE_SIZE} rows from {len(df)} total rows")
+def main():
+    """Main entry point for testing Pokemon prediction models."""
+    args = parse_args()
+    config = args_to_config(args)
+
+    file_path = Path(config['file_path'])
+    sample_size = config['sample_size']
+    confidence_threshold = config['confidence_threshold']
+
+    print("Loading data...")
+    df = pd.read_csv(file_path)
+
+    if sample_size is not None:
+        print(f"Sampling {sample_size} rows from {len(df)} total rows")
 
         strat_col = 'p2_number_of_pokemon_revealed'
 
@@ -736,10 +757,10 @@ def main():
 
         for i in range(6):
             weight = (i+1)**2 / total_weight
-            samples_per_stratum[i] = max(int(SAMPLE_SIZE * weight), 50)
+            samples_per_stratum[i] = max(int(sample_size * weight), 50)
 
-        if sum(samples_per_stratum.values()) > SAMPLE_SIZE:
-            scale = SAMPLE_SIZE / sum(samples_per_stratum.values())
+        if sum(samples_per_stratum.values()) > sample_size:
+            scale = sample_size / sum(samples_per_stratum.values())
             samples_per_stratum = {k: max(int(v * scale), 10) for k, v in samples_per_stratum.items()}
 
         print("Sampling strategy:")
@@ -760,10 +781,7 @@ def main():
             print(f"  {count} Pokemon revealed: {num_rows} rows")
 
     print("Loading models...")
-    models = load_latest_models()
-
-
-    debug_prediction_process(models)
+    models = load_latest_models(config)
 
     for revealed_count in range(0, 5):
         mask = df['p2_number_of_pokemon_revealed'] == revealed_count
@@ -779,18 +797,21 @@ def main():
             print(f"Pokemon revealed: {', '.join([example_row.get(f'p2_pokemon{i}_name', 'None') for i in range(1, start_idx)])}")
 
             try:
-                results, viz_data = propagate_predictions(example_row, models, start_idx)
+                results, viz_data = propagate_predictions(
+                    example_row, models, start_idx, confidence_threshold=confidence_threshold
+                )
                 G = create_prediction_visualization(viz_data, f"prediction_viz_from_pos{start_idx}.png")
             except Exception as e:
                 print(f"Failed to create visualization for start position {start_idx}: {e}")
 
     print("Evaluating models with propagation...")
-    evaluation_results, all_predictions = evaluate_predictions(df, models)
+    evaluation_results, all_predictions = evaluate_predictions(df, models, config)
 
     print("Visualizing results...")
     visualize_results(evaluation_results, all_predictions)
 
     print("\nEvaluation complete. Check the output files for visualizations.")
+
 
 if __name__ == "__main__":
     main()
