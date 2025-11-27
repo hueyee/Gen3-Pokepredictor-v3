@@ -1,0 +1,43 @@
+# Pokemon Prediction Project Configuration
+
+data:
+  raw_path: "data/raw"
+  processed_path: "data/processed/Parquets/all_pokemon_sequences.csv"
+  validation_output: "data/processed/Parquets/validation_pokemon_moves.csv"
+  test_data_path: "data/processed/Parquets/all_pokemon_moves.csv"
+
+training:
+  n_estimators: 400
+  max_depth: 50
+  min_samples_split: 2
+  min_samples_leaf: 1
+  max_features: 0.333
+  bootstrap: true
+  # class_weight options: null, "balanced", "balanced_subsample", or dict
+  class_weight: "balanced_subsample"
+  criterion: "entropy"
+  random_state: 42
+  n_jobs: -1
+  warm_start: true
+  oob_score: true
+  test_size: 0.2
+  validation_size: 0.2
+
+features:
+  use_rating_features: true
+  use_current_pokemon: true
+  use_previous_pokemon: true
+  use_pokemon_count: true
+  use_moves: false
+  use_turn_info: true
+  use_player_1: false
+  show_feature_importance: true
+  top_n_features: 20
+
+testing:
+  confidence_threshold: 0.1
+  max_propagations: 4
+  sample_size: 1000
+
+models:
+  output_dir: "data/models/Models"
