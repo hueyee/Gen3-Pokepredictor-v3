@@ -1,4 +1,4 @@
-import argparse
+"""Test and evaluate Pokemon prediction models."""
 from pathlib import Path
 
 import pandas as pd
@@ -14,54 +14,25 @@ import warnings
 import networkx as nx
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
+import yaml
 
-from one_hot_encoder import CustomOneHotEncoder
+from src.features.encoder import CustomOneHotEncoder
 
 logging.getLogger('joblib').setLevel(logging.ERROR)
 warnings.filterwarnings('ignore')
 
 
-def get_default_config():
-    """Return default configuration values."""
+def load_config(config_path="config.yaml"):
+    """Load configuration from YAML file."""
+    with open(config_path, 'r') as f:
+        cfg = yaml.safe_load(f)
     return {
-        'file_path': Path("./data/processed/Parquets/all_pokemon_moves.csv"),
-        'models_dir': Path("./data/models/Models"),
-        'confidence_threshold': 0.1,
-        'max_propagations': 4,
-        'sample_size': 1000,
+        'file_path': Path(cfg['data']['test_data_path']),
+        'models_dir': Path(cfg['models']['output_dir']),
+        'confidence_threshold': cfg['testing']['confidence_threshold'],
+        'max_propagations': cfg['testing']['max_propagations'],
+        'sample_size': cfg['testing']['sample_size'],
         'debug': False,
-    }
-
-
-def parse_args():
-    """Parse command-line arguments."""
-    defaults = get_default_config()
-    parser = argparse.ArgumentParser(description="Test Pokemon prediction models")
-    parser.add_argument('--data_path', type=Path, default=defaults['file_path'],
-                        help='Path to the test data CSV file')
-    parser.add_argument('--models_dir', type=Path, default=defaults['models_dir'],
-                        help='Directory containing trained models')
-    parser.add_argument('--confidence_threshold', type=float, default=defaults['confidence_threshold'],
-                        help='Confidence threshold for predictions')
-    parser.add_argument('--sample_size', type=int, default=defaults['sample_size'],
-                        help='Number of samples to evaluate (None for all)')
-    parser.add_argument('--no_sample', action='store_true',
-                        help='Use all data without sampling')
-    parser.add_argument('--debug', action='store_true',
-                        help='Enable debug mode to trace prediction process')
-    return parser.parse_args()
-
-
-def args_to_config(args):
-    """Convert parsed arguments to configuration dictionary."""
-    defaults = get_default_config()
-    return {
-        'file_path': args.data_path,
-        'models_dir': args.models_dir,
-        'confidence_threshold': args.confidence_threshold,
-        'max_propagations': defaults['max_propagations'],
-        'sample_size': None if args.no_sample else args.sample_size,
-        'debug': args.debug,
     }
 
 def load_latest_models(config):
@@ -725,8 +696,7 @@ def debug_prediction_process(df, models, config):
 
 def main():
     """Main entry point for testing Pokemon prediction models."""
-    args = parse_args()
-    config = args_to_config(args)
+    config = load_config()
 
     file_path = Path(config['file_path'])
     sample_size = config['sample_size']

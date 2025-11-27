@@ -1,4 +1,4 @@
-import argparse
+"""Train Pokemon prediction models using RandomForest classifiers."""
 from pathlib import Path
 
 import pandas as pd
@@ -15,107 +15,54 @@ import joblib
 import time
 import datetime
 import warnings
+import yaml
 warnings.filterwarnings('ignore')
 
-from one_hot_encoder import CustomOneHotEncoder
+from src.features.encoder import CustomOneHotEncoder
 
 
-def get_default_config():
-    """Return default configuration values."""
+def load_config(config_path="config.yaml"):
+    """Load configuration from YAML file."""
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+
+    # Flatten config for easier access
     return {
-        'file_path': Path("./data/processed/Parquets/all_pokemon_sequences.csv"),
-        'models_dir': Path("./data/models/Models"),
-        'use_rating_features': True,
-        'use_current_pokemon': True,
-        'use_previous_pokemon': True,
-        'use_pokemon_count': True,
-        'use_moves': False,
-        'use_turn_info': True,
-        'use_player_1': False,
-        'n_estimators': 400,
-        'max_depth': 50,
-        'min_samples_split': 2,
-        'min_samples_leaf': 1,
-        'max_features': 1/3,
-        'bootstrap': True,
-        'class_weight': 'balanced_subsample',
-        'random_state': 42,
-        'criterion': 'entropy',
-        'n_jobs': -1,
-        'warm_start': True,
-        'oob_score': True,
-        'test_size': 0.2,
-        'validation_size': 0.2,
-        'show_feature_importance': True,
-        'top_n_features': 20,
+        'file_path': Path(config['data']['processed_path']),
+        'validation_output': Path(config['data']['validation_output']),
+        'models_dir': Path(config['models']['output_dir']),
+        'use_rating_features': config['features']['use_rating_features'],
+        'use_current_pokemon': config['features']['use_current_pokemon'],
+        'use_previous_pokemon': config['features']['use_previous_pokemon'],
+        'use_pokemon_count': config['features']['use_pokemon_count'],
+        'use_moves': config['features']['use_moves'],
+        'use_turn_info': config['features']['use_turn_info'],
+        'use_player_1': config['features']['use_player_1'],
+        'show_feature_importance': config['features']['show_feature_importance'],
+        'top_n_features': config['features']['top_n_features'],
+        'n_estimators': config['training']['n_estimators'],
+        'max_depth': config['training']['max_depth'],
+        'min_samples_split': config['training']['min_samples_split'],
+        'min_samples_leaf': config['training']['min_samples_leaf'],
+        'max_features': config['training']['max_features'],
+        'bootstrap': config['training']['bootstrap'],
+        'class_weight': config['training']['class_weight'],
+        'random_state': config['training']['random_state'],
+        'criterion': config['training']['criterion'],
+        'n_jobs': config['training']['n_jobs'],
+        'warm_start': config['training']['warm_start'],
+        'oob_score': config['training']['oob_score'],
+        'test_size': config['training']['test_size'],
+        'validation_size': config['training']['validation_size'],
     }
 
-
-def parse_args():
-    """Parse command-line arguments."""
-    defaults = get_default_config()
-    parser = argparse.ArgumentParser(description="Train Pokemon prediction models")
-    parser.add_argument('--data_path', type=Path, default=defaults['file_path'],
-                        help='Path to the training data CSV file')
-    parser.add_argument('--models_dir', type=Path, default=defaults['models_dir'],
-                        help='Directory to save trained models')
-    parser.add_argument('--n_estimators', type=int, default=defaults['n_estimators'],
-                        help='Number of trees in the random forest')
-    parser.add_argument('--max_depth', type=int, default=defaults['max_depth'],
-                        help='Maximum depth of trees')
-    parser.add_argument('--test_size', type=float, default=defaults['test_size'],
-                        help='Proportion of data for testing')
-    parser.add_argument('--validation_size', type=float, default=defaults['validation_size'],
-                        help='Proportion of data for validation')
-    parser.add_argument('--random_state', type=int, default=defaults['random_state'],
-                        help='Random seed for reproducibility')
-    parser.add_argument('--no_rating_features', action='store_true',
-                        help='Disable rating features')
-    parser.add_argument('--use_moves', action='store_true',
-                        help='Include move features')
-    parser.add_argument('--use_player_1', action='store_true',
-                        help='Include player 1 features')
-    parser.add_argument('--no_feature_importance', action='store_true',
-                        help='Disable feature importance display')
-    return parser.parse_args()
-
-
-def args_to_config(args):
-    """Convert parsed arguments to configuration dictionary."""
-    defaults = get_default_config()
-    return {
-        'file_path': args.data_path,
-        'models_dir': args.models_dir,
-        'use_rating_features': not args.no_rating_features,
-        'use_current_pokemon': defaults['use_current_pokemon'],
-        'use_previous_pokemon': defaults['use_previous_pokemon'],
-        'use_pokemon_count': defaults['use_pokemon_count'],
-        'use_moves': args.use_moves,
-        'use_turn_info': defaults['use_turn_info'],
-        'use_player_1': args.use_player_1,
-        'n_estimators': args.n_estimators,
-        'max_depth': args.max_depth,
-        'min_samples_split': defaults['min_samples_split'],
-        'min_samples_leaf': defaults['min_samples_leaf'],
-        'max_features': defaults['max_features'],
-        'bootstrap': defaults['bootstrap'],
-        'class_weight': defaults['class_weight'],
-        'random_state': args.random_state,
-        'criterion': defaults['criterion'],
-        'n_jobs': defaults['n_jobs'],
-        'warm_start': defaults['warm_start'],
-        'oob_score': defaults['oob_score'],
-        'test_size': args.test_size,
-        'validation_size': args.validation_size,
-        'show_feature_importance': not args.no_feature_importance,
-        'top_n_features': defaults['top_n_features'],
-    }
 
 def load_data(file_path):
     """Load data from a CSV file."""
     file_path = Path(file_path)
     print(f"Loading data from {file_path}...")
     return pd.read_csv(file_path)
+
 
 def split_data_with_validation(df, config):
     """Split data into train/test/validation sets."""
@@ -124,7 +71,7 @@ def split_data_with_validation(df, config):
     test_size = config['test_size']
     validation_size = config['validation_size']
     random_state = config['random_state']
-    file_path = Path(config['file_path'])
+    validation_path = Path(config['validation_output'])
 
     class_counts = df['next_pokemon'].value_counts()
     rare_classes = class_counts[class_counts < 3].index
@@ -154,19 +101,19 @@ def split_data_with_validation(df, config):
     print(f"Test set size: {len(test_df)} ({len(test_df)/len(df)*100:.1f}%)")
     print(f"Validation set size: {len(validation_df)} ({len(validation_df)/len(df)*100:.1f}%)")
 
-    validation_path = file_path.parent / "validation_pokemon_moves.csv"
     validation_path.parent.mkdir(parents=True, exist_ok=True)
     validation_df.to_csv(validation_path, index=False)
     print(f"Validation set saved to {validation_path}")
 
     return pd.concat([train_df, test_df])
 
+
 def preprocess_data(df, pokemon_idx, config):
     """Preprocess data for a specific Pokemon index."""
     print(f"Preprocessing data for Pokemon {pokemon_idx}...")
     processed_df = df.copy()
 
-    target_column = f"next_pokemon"
+    target_column = "next_pokemon"
 
     features = []
 
@@ -182,8 +129,8 @@ def preprocess_data(df, pokemon_idx, config):
     if config['use_previous_pokemon']:
         if config['use_player_1']:
             features.extend([
-                'p1_pokemon1_name', 'p1_pokemon2_name', 'p1_pokemon3_name', 'p1_pokemon4_name', 'p1_pokemon5_name',
-                'p1_pokemon6_name',
+                'p1_pokemon1_name', 'p1_pokemon2_name', 'p1_pokemon3_name',
+                'p1_pokemon4_name', 'p1_pokemon5_name', 'p1_pokemon6_name',
             ])
 
         for i in range(1, pokemon_idx):
@@ -263,31 +210,34 @@ def get_model(config):
 
 def encode_features(X, categorical_features, numerical_features, encoder=None, fit=False):
     """Encode features using the CustomOneHotEncoder.
-    
+
     Args:
         X: DataFrame with features
         categorical_features: List of categorical feature names
         numerical_features: List of numerical feature names
         encoder: Existing encoder to use (required if fit=False)
         fit: Whether to fit the encoder on X
-        
+
     Returns:
         Tuple of (encoded_features, encoder, feature_names)
-        
+
     Raises:
         ValueError: If fit=False and encoder is None
     """
     if not fit and encoder is None:
-        raise ValueError('Encoder must be provided when fit=False. Pass an existing encoder or set fit=True to create a new one.')
-    
+        raise ValueError(
+            'Encoder must be provided when fit=False. '
+            'Pass an existing encoder or set fit=True to create a new one.'
+        )
+
     if fit:
         encoder = CustomOneHotEncoder().fit(X, categorical_features)
-    
+
     X_cat = encoder.transform(X, categorical_features)
     X_num = X[numerical_features].values if numerical_features else np.zeros((X.shape[0], 0))
     X_combined = np.hstack([X_cat, X_num])
     feature_names = encoder.get_feature_names() + numerical_features
-    
+
     return X_combined, encoder, feature_names
 
 
@@ -389,10 +339,7 @@ def evaluate_model(model_info, pokemon_idx, config):
 
     all_classes = sorted(list(set(y_test.unique()).union(set(y_pred))))
     print(f"\nConfusion Matrix (all {len(all_classes)} classes):")
-    cm = confusion_matrix(
-        y_test, y_pred,
-        labels=all_classes
-    )
+    cm = confusion_matrix(y_test, y_pred, labels=all_classes)
     cm_df = pd.DataFrame(cm, index=all_classes, columns=all_classes)
 
     try:
@@ -447,7 +394,7 @@ def show_feature_importance(model_info, pokemon_idx, config):
         plt.tight_layout()
         plt.savefig(f'aggregate_feature_importance_pokemon_{pokemon_idx}.png')
         plt.close()
-        print(f"\nAggregate feature importance plot saved as 'aggregate_feature_importance_pokemon_{pokemon_idx}.png'")
+        print(f"\nAggregate feature importance plot saved")
     except Exception as e:
         print(f"Could not create aggregate feature importance plot: {e}")
 
@@ -458,7 +405,7 @@ def show_feature_importance(model_info, pokemon_idx, config):
         plt.tight_layout()
         plt.savefig(f'individual_feature_importance_pokemon_{pokemon_idx}.png')
         plt.close()
-        print(f"Top {top_n_features} individual feature importance plot saved as 'individual_feature_importance_pokemon_{pokemon_idx}.png'")
+        print(f"Top {top_n_features} individual feature importance plot saved")
     except Exception as e:
         print(f"Could not create individual feature importance plot: {e}")
 
@@ -484,8 +431,7 @@ def save_model_package(model_info, output_dir, pokemon_idx):
 
 def main():
     """Main entry point for training Pokemon prediction models."""
-    args = parse_args()
-    config = args_to_config(args)
+    config = load_config()
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path(config['models_dir']) / timestamp
