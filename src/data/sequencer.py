@@ -178,9 +178,18 @@ def analyze_sequence_coverage(df: pd.DataFrame) -> None:
         print(f"  Last turn ({last_row['turn_id']}): {last_row['p2_number_of_pokemon_revealed']} Pokemon revealed")
 
 
+def get_input_path(config):
+    """Get the input CSV path from config."""
+    if 'test_data_path' in config.get('data', {}):
+        return Path(config['data']['test_data_path'])
+    # Default to all_pokemon_moves.csv in same directory as processed_path
+    processed_path = Path(config['data']['processed_path'])
+    return processed_path.parent / 'all_pokemon_moves.csv'
+
+
 def main():
     config = load_config()
-    input_csv = Path(config['testing']['test_data_path']) if 'test_data_path' in config.get('testing', {}) else Path(config['data']['processed_path'].replace('all_pokemon_sequences.csv', 'all_pokemon_moves.csv'))
+    input_csv = get_input_path(config)
     output_csv = Path(config['data']['processed_path'])
 
     print(f"Loading data from {input_csv}...")

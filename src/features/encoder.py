@@ -46,7 +46,6 @@ class CustomOneHotEncoder:
         current_idx = 0
         for feature in categorical_features:
             if feature not in self.encoders:
-                current_idx += 0
                 continue
             encoder = self.encoders[feature]
             for i, value in enumerate(X[feature]):

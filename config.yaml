@@ -13,6 +13,7 @@ training:
   min_samples_leaf: 1
   max_features: 0.333
   bootstrap: true
+  # class_weight options: null, "balanced", "balanced_subsample", or dict
   class_weight: "balanced_subsample"
   criterion: "entropy"
   random_state: 42
