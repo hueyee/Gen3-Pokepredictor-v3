@@ -278,7 +278,7 @@ def encode_features(X, categorical_features, numerical_features, encoder=None, f
         ValueError: If fit=False and encoder is None
     """
     if not fit and encoder is None:
-        raise ValueError('encoder must be provided when fit=False')
+        raise ValueError('Encoder must be provided when fit=False. Pass an existing encoder or set fit=True to create a new one.')
     
     if fit:
         encoder = CustomOneHotEncoder().fit(X, categorical_features)
