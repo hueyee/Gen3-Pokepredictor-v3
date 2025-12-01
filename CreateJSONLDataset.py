@@ -1,8 +1,10 @@
 import json
+import gc
 from pathlib import Path
 from typing import List, Dict, Set
 
 import pandas as pd
+from tqdm import tqdm
 
 from game_parser import (
     parse_replay_data,
@@ -11,8 +13,8 @@ from game_parser import (
 )
 
 
-def find_parquet_files(limit: int = 5) -> List[Path]:
-    """Locate Parquet replay metadata files, return up to limit paths.
+def find_parquet_files() -> List[Path]:
+    """Locate all Parquet replay metadata files.
 
     Searches in priority order: data/raw/Replay Reference, data/raw/Replays, Parquets/.
     """
@@ -25,9 +27,7 @@ def find_parquet_files(limit: int = 5) -> List[Path]:
     for root in search_roots:
         if root.exists():
             files.extend(sorted(root.glob("*.parquet")))
-        if len(files) >= limit:
-            break
-    return files[:limit]
+    return files
 
 
 def collect_full_team(refined: Dict) -> Dict[str, List[str]]:
@@ -238,53 +238,84 @@ def process_log_row(row: Dict) -> List[Dict]:
 
 
 def main():
-    parquet_paths = find_parquet_files(limit=5)
+    parquet_paths = find_parquet_files()
     output_dir = Path("data/parsed")
     output_dir.mkdir(parents=True, exist_ok=True)
     output_file = output_dir / "replays.jsonl"
 
-    all_records: List[Dict] = []
-    skipped_games = []
-    errored_games = []
+    # Streaming mode: avoid storing all records in memory
+    skipped_games: List[Dict] = []
+    errored_games: List[Dict] = []
+    written_records = 0
+    processed_rows = 0
 
     if not parquet_paths:
         print("No Parquet files found for replay metadata (looked in data/raw/Replay Reference, data/raw/Replays, Parquets/).")
         return
-    print(f"Processing {len(parquet_paths)} parquet file(s) (limited to first 5).")
+    print(f"Processing {len(parquet_paths)} parquet file(s).")
 
-    processed_rows = 0
-    for path in parquet_paths:
+    # Calculate total rows in Replay Reference for a global progress bar
+    replay_ref_root = Path("data/raw/Replay Reference")
+    replay_ref_files = [p for p in parquet_paths if p.parent == replay_ref_root]
+    total_rows_replay_ref = 0
+    for p in replay_ref_files:
+        try:
+            total_rows_replay_ref += len(pd.read_parquet(p))
+        except Exception:
+            # If a file can't be read, skip counting it for the global bar
+            pass
+
+    global_pbar = None
+    if total_rows_replay_ref > 0:
+        global_pbar = tqdm(total=total_rows_replay_ref, desc="Replay Reference rows", unit="row")
+
+    # Open output file once for streaming writes
+    out = open(output_file, "w", encoding="utf-8")
+
+    # Iterate through all parquet files; update global row bar for Replay Reference
+    for path in tqdm(parquet_paths, desc="Parquet files", unit="file"):
         try:
             df = pd.read_parquet(path)
         except Exception as e:
             print(f"Error reading {path}: {e}")
             continue
-        # Iterate rows until we have 5 games total across all files
-        for _, row in df.iterrows():
-            if processed_rows >= 5:
-                break
-            records = process_log_row(row.to_dict())
+        # Per-file row progress bar; iterate through items (tuples) for speed
+        for row in tqdm(df.itertuples(index=False, name="Row"), total=len(df), desc=f"Rows in {path.name}", unit="row", leave=False):
+            # Convert namedtuple to dict for processing
+            records = process_log_row(row._asdict())
+            processed_rows += 1
             if len(records) == 1 and ("skip_game_id" in records[0] or "error_game_id" in records[0]):
                 sentinel = records[0]
                 if "skip_game_id" in sentinel:
                     skipped_games.append(sentinel)
-                    print(f"Skipping {sentinel['skip_game_id']}: {sentinel['reason']}")
                 else:
                     errored_games.append(sentinel)
-                    print(f"Error {sentinel['error_game_id']}: {sentinel['error']}")
             else:
-                all_records.extend(records)
-            processed_rows += 1
-        if processed_rows >= 5:
-            break
+                # Stream each record immediately to disk
+                for rec in records:
+                    out.write(json.dumps(rec) + "\n")
+                    written_records += 1
+            # Update global progress bar only for Replay Reference rows
+            if global_pbar is not None and path.parent == replay_ref_root:
+                # Keep a quick status of skipped/errors in the postfix
+                global_pbar.update(1)
+                global_pbar.set_postfix(skipped=len(skipped_games), errors=len(errored_games))
 
-    with open(output_file, "w", encoding="utf-8") as out:
-        for rec in all_records:
-            out.write(json.dumps(rec) + "\n")
+            # Periodic garbage collection to keep memory stable on huge datasets
+            if processed_rows % 10000 == 0:
+                gc.collect()
 
-    print(f"Written {len(all_records)} JSONL records to {output_file}")
+    if global_pbar is not None:
+        global_pbar.close()
+
+    out.flush()
+    out.close()
+
+    print(f"Processed {processed_rows} row(s) across parquet files.")
+    print(f"Written {written_records} JSONL records to {output_file}")
+    # Report skipped rows (each skipped row corresponds to a replay row that was not converted)
     if skipped_games:
-        print(f"Skipped {len(skipped_games)} games (missing ratings).")
+        print(f"Skipped {len(skipped_games)} row(s) (e.g., missing ratings or empty logs).")
     if errored_games:
         print(f"Encountered errors in {len(errored_games)} games.")
 
