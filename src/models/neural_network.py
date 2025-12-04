@@ -34,11 +34,9 @@ CONFIG = {
     'seed': 42
 }
 
-# Logger setup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- DATASET CLASSES (Unchanged) ---
 class StreamingPokemonDataset(IterableDataset):
     def __init__(self, file_path, split_ids, training=True, sample_rate=1.0):
         super().__init__()
