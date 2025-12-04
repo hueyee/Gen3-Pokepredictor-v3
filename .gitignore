@@ -1,7 +1,7 @@
 venv/
 .idea/
 Parquets/
-Models/
+/models/
 __pycache__/
 *.pyc
 .DS_Store
