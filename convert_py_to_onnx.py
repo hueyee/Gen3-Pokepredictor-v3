@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 import torch
+import onnx
 
 # Ensure project root is on sys.path for src imports
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -32,6 +33,7 @@ def main():
     # Ensure output directory exists
     CONFIG['onnx_save_path'].parent.mkdir(parents=True, exist_ok=True)
 
+    # Export base ONNX file
     torch.onnx.export(
         model,
         dummy_input,
@@ -45,7 +47,21 @@ def main():
         },
     )
 
+    # Re-save with external data format to produce .onnx.data
+    onnx_model = onnx.load(str(CONFIG['onnx_save_path']))
+    external_data_path = str(CONFIG['onnx_save_path']) + ".data"
+    onnx.save_model(
+        onnx_model,
+        str(CONFIG['onnx_save_path']),
+        save_as_external_data=True,
+        all_tensors_to_one_file=True,
+        location=Path(external_data_path).name,
+        size_threshold=1024,
+        convert_attribute=False,
+    )
+
     print(f"ONNX model exported to {CONFIG['onnx_save_path']}")
+    print(f"External data saved to {external_data_path}")
 
 
 if __name__ == "__main__":
