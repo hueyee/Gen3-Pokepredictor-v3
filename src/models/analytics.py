@@ -36,10 +36,31 @@ MODEL_PATH = PROJECT_ROOT / 'models' / 'pokemon_predictor.pth'
 PLOTS_DIR = PROJECT_ROOT / 'data' / 'analytics'
 
 
+def _normalize_name(name: Optional[str]) -> Optional[str]:
+    if not isinstance(name, str) or not name:
+        return None
+    n = name.strip()
+    # Normalize common form suffixes to base species for team-level metrics
+    # Examples: "Charizard-Mega-Y" -> "Charizard", "Gengar-Mega" -> "Gengar"
+    # Also handle other forms that may appear in logs, e.g., regional forms
+    # If base species not found, fall back to original name.
+    for sep in ["-Mega", "-Mega-X", "-Mega-Y", "-Primal", "-Alola", "-Galar", "-Hisui"]:
+        if n.startswith(tuple([n.split(sep)[0]])) and sep in n:
+            n = n.split(sep)[0]
+            break
+    # Some forms are suffix-only variants (e.g., Rotom forms). Strip after first '-'.
+    if '-' in n and n not in NAME_TO_IDX:
+        base = n.split('-')[0]
+        if base in NAME_TO_IDX:
+            n = base
+    return n if n in NAME_TO_IDX else name
+
+
 def _encode_pokemon(name: Optional[str]) -> np.ndarray:
     one_hot = np.zeros(NUM_POKEMON, dtype=np.float32)
-    if isinstance(name, str):
-        idx = NAME_TO_IDX.get(name, -1)
+    nm = _normalize_name(name)
+    if isinstance(nm, str):
+        idx = NAME_TO_IDX.get(nm, -1)
         if idx != -1:
             one_hot[idx] = 1.0
     return one_hot
@@ -50,7 +71,8 @@ def _encode_team(names: List[str]) -> np.ndarray:
     for n in names:
         if not isinstance(n, str):
             continue
-        idx = NAME_TO_IDX.get(n, -1)
+        nm = _normalize_name(n)
+        idx = NAME_TO_IDX.get(nm if isinstance(nm, str) else n, -1)
         if idx != -1:
             multi[idx] = 1.0
     return multi
@@ -110,7 +132,7 @@ def build_true_team_map(df: pd.DataFrame) -> Dict[str, Set[str]]:
             vals = gdf[col].dropna().astype(str).tolist()
             for v in vals:
                 if v and v != 'nan':
-                    names.add(v)
+                    names.add(_normalize_name(v) or v)
         team_map[str(gid)] = names
     return team_map
 
@@ -119,7 +141,8 @@ def topk_excluding_revealed(probs: np.ndarray, revealed: Set[str], k: int) -> Li
     # Set revealed mons probs very negative so they don't rank
     pr = probs.copy()
     for name in revealed:
-        idx = NAME_TO_IDX.get(name, -1)
+        nm = _normalize_name(name)
+        idx = NAME_TO_IDX.get(nm if isinstance(nm, str) else name, -1)
         if idx != -1:
             pr[idx] = -1.0
     top_idx = np.argsort(-pr)[:k]
@@ -141,7 +164,7 @@ def compute_discovery_metrics(df: pd.DataFrame, runner: ModelRunner, team_map: D
         for i in range(1, rct + 1):
             nm = row.get(f'p2_pokemon{i}_name')
             if isinstance(nm, str) and nm:
-                revealed.add(nm)
+                revealed.add(_normalize_name(nm) or nm)
 
         feats = runner.features_from_row(row)
         probs = runner.predict_probs(feats)
@@ -158,7 +181,8 @@ def compute_discovery_metrics(df: pd.DataFrame, runner: ModelRunner, team_map: D
             k_needed = 6 - len(predicted_team)
             best_remaining = topk_excluding_revealed(probs, revealed, k=k_needed)
             predicted_team.extend(best_remaining)
-        pred_set = set(predicted_team)
+        # Normalize predicted names for fair Jaccard against normalized truth
+        pred_set = set([_normalize_name(n) or n for n in predicted_team])
         union = len(pred_set | true_team) or 1
         jaccard = len(pred_set & true_team) / union
 
@@ -400,6 +424,139 @@ def plot_log_loss(df_loss: pd.DataFrame) -> Optional[Path]:
     return out
 
 
+def compute_calibration(df: pd.DataFrame, runner: ModelRunner, team_map: Dict[str, Set[str]], max_turn: int = 20, n_bins: int = 10) -> pd.DataFrame:
+    """
+    Compute reliability diagram for a Multi-Label problem (Team Prediction).
+    We flatten ALL predictions: If model says 'Pikachu: 0.8', we check if Pikachu is in true_team.
+    """
+    y_probs = []
+    y_true = []
+
+    # Iterate through each battle/turn
+    for _, row in df.iterrows():
+        # Robust turn parsing and filter
+        raw_turn = row.get('turn_id', 0)
+        try:
+            turn = int(float(raw_turn))
+        except Exception:
+            continue
+        if turn < 0 or turn > max_turn:
+            continue
+
+        # Full true team set from precomputed map
+        gid = str(row.get('game_id'))
+        true_team = set(team_map.get(gid, set()))
+        if not true_team:
+            continue
+
+        # 2. Get Model Probabilities for ALL Pokemon
+        feats = runner.features_from_row(row)
+        probs = runner.predict_probs(feats) # Array of shape (1000,)
+        
+        # 3. Flatten: Compare every pokemon's prob against truth
+        # Optimization: Only check the top N or >1% probs to save memory if needed
+        # But strictly speaking, calibration includes the low probs too.
+        
+        for mon_name, idx in NAME_TO_IDX.items():
+            prob = float(probs[idx])
+            
+            # Skip negligible probabilities to speed up processing (optional but recommended)
+            if prob < 0.01: 
+                continue
+                
+            y_probs.append(prob)
+            y_true.append(1.0 if mon_name in true_team else 0.0)
+
+    # 4. Standard Calibration Calculation
+    if not y_probs:
+        return pd.DataFrame(columns=['bin_center', 'empirical_acc', 'count'])
+
+    dfc = pd.DataFrame({'confidence': y_probs, 'correct': y_true})
+    
+    # Binning
+    bins = np.linspace(0.0, 1.0, n_bins + 1)
+    # Label as the center of the bin
+    labels = (bins[:-1] + bins[1:]) / 2.0
+    
+    dfc['bin'] = pd.cut(dfc['confidence'], bins=bins, labels=labels, include_lowest=True)
+    
+    # Aggregate
+    agg = dfc.groupby('bin').agg(
+        empirical_acc=('correct', 'mean'), 
+        count=('correct', 'size')
+    ).reset_index()
+    
+    return agg.rename(columns={'bin': 'bin_center'})
+
+
+def plot_calibration(df_cal: pd.DataFrame) -> Optional[Path]:
+    if df_cal.empty:
+        return None
+    plt.figure(figsize=(7, 7))
+    x = df_cal['bin_center'].astype(float)
+    y = df_cal['empirical_acc'].astype(float)
+    counts = df_cal['count'].astype(int)
+    # Size points by sample count to show support
+    sizes = 50 + 150 * (counts / max(counts.max(), 1))
+    plt.scatter(x, y, s=sizes, color='purple', alpha=0.8, label='Empirical accuracy')
+    plt.plot([0, 1], [0, 1], '--', color='grey', label='Perfect calibration')
+    plt.xlabel('Predicted probability (confidence)')
+    plt.ylabel('Fraction correct (empirical)')
+    plt.title('Calibration Plot (Reliability Diagram)')
+    plt.xlim(0, 1)
+    plt.ylim(0, 1)
+    plt.legend(loc='lower right')
+    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+    out = PLOTS_DIR / 'calibration_plot.png'
+    plt.tight_layout()
+    plt.savefig(out, dpi=150)
+    plt.close()
+    return out
+
+
+def compute_calibration_team(df: pd.DataFrame, runner: ModelRunner, team_map: Dict[str, Set[str]], max_turn: int = 20, n_bins: int = 10) -> pd.DataFrame:
+    """
+    Team-based reliability diagram.
+    Checks whether each predicted Pokemon (with its confidence) is in the opponent's
+    final true team, not just the next reveal.
+    Mirrors the binning strategy in compute_calibration.
+    """
+    records: List[Dict[str, float]] = []
+    for _, row in df.iterrows():
+        # Robust turn parsing & filter
+        raw_turn = row.get('turn_id', 0)
+        try:
+            turn = int(float(raw_turn))
+        except Exception:
+            continue
+        if turn < 0 or turn > max_turn:
+            continue
+
+        gid = str(row.get('game_id'))
+        true_team_set = set(team_map.get(gid, set()))
+        if not true_team_set:
+            continue
+
+        feats = runner.features_from_row(row)
+        probs = runner.predict_probs(feats)
+
+        for mon_name, idx in NAME_TO_IDX.items():
+            conf = float(probs[idx])
+            # Optional speed optimization: ignore negligible probabilities
+            if conf < 0.01:
+                continue
+            is_correct = 1.0 if mon_name in true_team_set else 0.0
+            records.append({'confidence': conf, 'correct': is_correct})
+
+    if not records:
+        return pd.DataFrame(columns=['bin_center', 'empirical_acc', 'count'])
+
+    dfc = pd.DataFrame(records)
+    bins = np.linspace(0.0, 1.0, n_bins + 1)
+    labels = np.clip((bins[:-1] + bins[1:]) / 2.0, 0.0, 1.0)
+    dfc['bin'] = pd.cut(dfc['confidence'], bins=bins, labels=labels, include_lowest=True)
+    agg = dfc.groupby('bin').agg(empirical_acc=('correct', 'mean'), count=('correct', 'size')).reset_index()
+    return agg.rename(columns={'bin': 'bin_center'})
 def run_analytics(max_turn: int = 20, sample_games: Optional[int] = None,
                   game_id: Optional[str] = None, top_false: int = 3) -> Dict[str, Optional[Path]]:
     df = pd.read_csv(DATA_CSV)
@@ -420,6 +577,12 @@ def run_analytics(max_turn: int = 20, sample_games: Optional[int] = None,
     paths['signal_vs_noise'] = plot_signal_vs_noise(df, runner, team_map, max_turn=max_turn)
     paths['suspects'] = plot_suspects(df, runner, game_id=game_id, top_false=top_false)
     paths['rank_race'] = plot_rank_race(df, runner, game_id=game_id)
+    # Calibration
+    cal_df = compute_calibration(df, runner, max_turn=max_turn, n_bins=10)
+    paths['calibration'] = plot_calibration(cal_df)
+    # Team-based Calibration
+    cal_team_df = compute_calibration_team(df, runner, team_map, max_turn=max_turn, n_bins=10)
+    paths['calibration_team'] = plot_calibration(cal_team_df)
     return paths
 
 

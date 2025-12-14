@@ -22,8 +22,10 @@ from src.models.analytics import (
     build_true_team_map,
     compute_discovery_metrics,
     compute_log_loss_over_turns,
+    compute_calibration,
     plot_discovery_curve,
     plot_log_loss,
+    plot_calibration,
     plot_signal_vs_noise,
 )
 
@@ -39,9 +41,11 @@ def main(max_turn: int = 20, sample_games: Optional[int] = None) -> None:
 
     discovery_df = compute_discovery_metrics(df, runner, team_map, max_turn=max_turn)
     loss_df = compute_log_loss_over_turns(df, runner, max_turn=max_turn)
+    cal_df = compute_calibration(df, runner, team_map, max_turn=max_turn, n_bins=10)
 
     print('discovery_curve:', plot_discovery_curve(discovery_df))
     print('log_loss:', plot_log_loss(loss_df))
+    print('calibration:', plot_calibration(cal_df))
     print('signal_vs_noise:', plot_signal_vs_noise(df, runner, team_map, max_turn=max_turn))
     # Coverage report for turns
     try:
