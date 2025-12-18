@@ -103,6 +103,49 @@ class StreamingPokemonDataset(IterableDataset):
 
                 yield torch.FloatTensor(features), torch.FloatTensor(target_vector)
 
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
+        """
+        Args:
+            alpha (float): Weighting factor for the positive class (0 < alpha < 1).
+                           Helps balance the large number of negative classes (unpicked mons).
+            gamma (float): Focusing parameter (gamma >= 0). 
+                           Higher gamma reduces loss for "easy" examples (confident predictions).
+            reduction (str): 'mean', 'sum', or 'none'.
+        """
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        # 1. Calculate standard BCE (Binary Cross Entropy)
+        # using functional API for numerical stability with logits
+        bce_loss = torch.nn.functional.binary_cross_entropy_with_logits(
+            inputs, targets, reduction='none'
+        )
+        
+        # 2. Get the probabilities (pt) for the class that is true
+        # p_t = p if y=1, else (1-p)
+        # We can calculate pt using exp(-bce_loss) because BCE = -log(pt)
+        pt = torch.exp(-bce_loss)
+        
+        # 3. Calculate the Focal Loss
+        # Formula: -alpha * (1-pt)^gamma * log(pt)
+        # Note: We apply alpha to positive examples and (1-alpha) to negatives
+        
+        # Create alpha factor tensor matching target shape
+        alpha_factor = torch.where(targets == 1, self.alpha, 1 - self.alpha)
+        
+        focal_loss = alpha_factor * (1 - pt) ** self.gamma * bce_loss
+
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
 class PokemonPredictor(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.3):
         super(PokemonPredictor, self).__init__()
@@ -262,8 +305,11 @@ def train_model(regen_splits=False, checkpoint_every=0, resume=False):
     # 2. Model Initialization
     input_dim = 2 + (NUM_POKEMON * 4)
     model = PokemonPredictor(input_dim, CONFIG['hidden_dim'], NUM_POKEMON, CONFIG['dropout']).to(CONFIG['device'])
-    pos_weight = torch.tensor([20.0]).to(CONFIG['device'])
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    
+    # Focal Loss with alpha=0.25 and gamma=2.0
+    # alpha=0.25: Balances the large number of negative classes (~150:1 ratio)
+    # gamma=2.0: Focuses on hard examples, down-weighting easy negatives
+    criterion = FocalLoss(alpha=0.25, gamma=2.0).to(CONFIG['device'])
     optimizer = optim.Adam(model.parameters(), lr=CONFIG['learning_rate'])
 
     start_epoch = 0
