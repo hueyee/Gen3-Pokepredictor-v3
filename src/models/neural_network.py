@@ -25,11 +25,11 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG = {
     'data_path': _PROJECT_ROOT / 'data' / 'parsed' / 'replays.jsonl',
     'model_save_path': _PROJECT_ROOT / 'models' / 'pokemon_predictor.pth',
-    'batch_size': 64,
-    'learning_rate': 0.001,
-    'epochs': 20,
+    'batch_size': 128,
+    'learning_rate': 0.0001,
+    'epochs': 30,
     'hidden_dim': 512,
-    'dropout': 0.3,
+    'dropout': 0.24,
     'device': 'mps' if torch.backends.mps.is_available() else ('cuda' if torch.cuda.is_available() else 'cpu'),
     'seed': 42
 }
@@ -104,7 +104,7 @@ class StreamingPokemonDataset(IterableDataset):
                 yield torch.FloatTensor(features), torch.FloatTensor(target_vector)
 
 class FocalLoss(nn.Module):
-    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
+    def __init__(self, alpha=0.47, gamma=2.0, reduction='mean'):
         """
         Args:
             alpha (float): Weighting factor for the positive class (0 < alpha < 1).
