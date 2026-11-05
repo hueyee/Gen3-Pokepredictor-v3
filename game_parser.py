@@ -100,9 +100,11 @@ def refine_features(features):
                     "p2": len(revealed_pokemon["p2"])
                 },
                 "moves_used": [],
+                "move_attempts": [],
                 "damage": [],
                 "statuses": [],
-                "fainted": []
+                "fainted": [],
+                "voluntary_switches": {"p1": False, "p2": False},
             }
 
             for event in feature["turn_events"]:
@@ -112,22 +114,42 @@ def refine_features(features):
                     player = parts[2].split(':')[0]
                     pokemon = parts[3].split(',')[0]
 
-                    if "p1" in player:
-                        if current_pokemon["p1"] != pokemon and current_pokemon["p1"] is not None:
-                            previous_pokemon["p1"] = [current_pokemon["p1"]] + previous_pokemon["p1"][:-1]
-                        current_pokemon["p1"] = pokemon
+                    pid = "p1" if "p1" in player else "p2" if "p2" in player else None
+
+                    if pid:
+                        
+                        if parts[1] == "switch":
+                            turn_summary["voluntary_switches"][pid] = True
+
+                        if current_pokemon[pid] != pokemon and current_pokemon[pid] is not None:
+                            previous_pokemon[pid] = [current_pokemon[pid]] + previous_pokemon[pid][:-1]
+                        current_pokemon[pid] = pokemon
+                        revealed_pokemon[pid].add(pokemon)
                         revealed_pokemon["p1"].add(pokemon)
-                    elif "p2" in player:
-                        if current_pokemon["p2"] != pokemon and current_pokemon["p2"] is not None:
-                            previous_pokemon["p2"] = [current_pokemon["p2"]] + previous_pokemon["p2"][:-1]
-                        current_pokemon["p2"] = pokemon
-                        revealed_pokemon["p2"].add(pokemon)
 
                 elif len(parts) > 2 and parts[1] == "move":
                     pokemon = parts[2].split(': ')[1] if ': ' in parts[2] else None
                     move = parts[3]
                     if pokemon:
                         turn_summary["moves_used"].append({"pokemon": pokemon, "move": move})
+
+                elif len(parts) > 2 and parts[1] == "cant":
+                    pokemon_info = parts[2]
+                    move_name = parts[4] if len(parts) > 4 else None
+                    
+                    if pokemon_info and move_name:
+                         pokemon = pokemon_info.split(': ')[1] if ': ' in pokemon_info else None
+                         if pokemon:
+                             turn_summary["move_attempts"].append({"pokemon": pokemon, "move": move_name})
+
+                elif len(parts) > 2 and parts[1] == "singleturn":
+                    pokemon_info = parts[2]
+                    status_info = parts[3] # "move: Focus Punch"
+                    if status_info.startswith("move: "):
+                        move_name = status_info.split("move: ")[1]
+                        pokemon = pokemon_info.split(': ')[1] if ': ' in pokemon_info else None
+                        if pokemon and move_name:
+                            turn_summary["move_attempts"].append({"pokemon": pokemon, "move": move_name})
 
                 elif len(parts) > 2 and parts[1] == "-damage":
                     target = parts[2].split(': ')[1] if ': ' in parts[2] else None

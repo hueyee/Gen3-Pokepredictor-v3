@@ -52,11 +52,9 @@ def generate_jsonl_records(
     """Generate per-turn JSONL records for both perspectives."""
     records: List[Dict] = []
 
-    # Ratings: prefer override provided (from Parquet row rating), otherwise use refined
     p1_rating = (rating_override or {}).get("p1", refined.get("player_ratings", {}).get("p1"))
     p2_rating = (rating_override or {}).get("p2", refined.get("player_ratings", {}).get("p2"))
 
-    # Skip logic per instructions
     lower_id = game_id.lower()
     default_sites = ("smogtours", "azure", "gold", "bigbang")
     if p1_rating is None:
@@ -73,27 +71,30 @@ def generate_jsonl_records(
     full_teams = collect_full_team(refined)
     opponent_full_team = {"p1": full_teams["p2"], "p2": full_teams["p1"]}
 
-    # Track revealed order and moves seen so far
     revealed_order = {"p1": [], "p2": []}
     revealed_set = {"p1": set(), "p2": set()}
     moves_seen: Dict[str, Dict[str, Set[str]]] = {"p1": {}, "p2": {}}
 
     prev_active = {"p1": None, "p2": None}
+    
     for turn_index, turn in enumerate(refined.get("turns", []), start=1):
-        # Update moves from this turn
-        for move_event in turn.get("moves_used", []):
+        
+        # --- Update Moves Seen ---
+        # Combine successful moves AND failed attempts (Focus Punch, Taunted moves)
+        all_move_events = turn.get("moves_used", []) + turn.get("move_attempts", [])
+        
+        for move_event in all_move_events:
             species = move_event.get("pokemon")
             move = move_event.get("move")
             if not species or not move:
                 continue
-            # Determine which player the species belongs to based on active_pokemon
-            # Fallback: if species matches current active of p1 use p1 else if p2 then p2.
+            
             owner = None
             if species == turn["active_pokemon"]["p1"]:
                 owner = "p1"
             elif species == turn["active_pokemon"]["p2"]:
                 owner = "p2"
-            # If ambiguous, add to both if already revealed there; else skip.
+            
             if owner is None:
                 for pid in ["p1", "p2"]:
                     if species in revealed_set[pid]:
@@ -110,20 +111,39 @@ def generate_jsonl_records(
                 revealed_set[pid].add(active)
                 revealed_order[pid].append(active)
 
-        # Determine actions for both sides on this turn
+        # --- Determine Actions ---
         actions = {"p1": None, "p2": None}
-        # If a move by current active exists, record as move; otherwise if active changed from prev, record switch
+        
         for pid in ["p1", "p2"]:
             active = turn["active_pokemon"][pid]
+            
+            # 1. Check for Move (Successful)
             move_name = next((m.get("move") for m in turn.get("moves_used", []) if m.get("pokemon") == active), None)
+            
+            # 2. Check for Move (Failed/Blocked) - e.g. Focus Punch or Taunt
+            if not move_name:
+                move_name = next((m.get("move") for m in turn.get("move_attempts", []) if m.get("pokemon") == active), None)
+
             if move_name:
                 actions[pid] = {"type": "move", "value": move_name}
             else:
-                if prev_active[pid] is not None and active != prev_active[pid]:
-                    actions[pid] = {"type": "switch", "value": active}
+                # 3. Check for Voluntary Switch
+                # If they explicitly used |switch|, it's a switch action
+                if turn.get("voluntary_switches", {}).get(pid):
+                     actions[pid] = {"type": "switch", "value": active}
+                
+                # 4. Handle First Appearance (Lead)
                 elif prev_active[pid] is None and active is not None:
-                    # First appearance counts as a switch-into-field
                     actions[pid] = {"type": "switch", "value": active}
+                
+                # 5. Handle Drag/Forced Switch
+                # If active changed, but it wasn't a voluntary switch (and no move was recorded),
+                # it implies a drag/force-out.
+                # In this case, we do NOT label it as a switch action, because the player didn't choose it.
+                elif prev_active[pid] is not None and active != prev_active[pid]:
+                    # Case 3: Dragged out while trying to attack (but attack didn't happen).
+                    # We leave actions[pid] as None because we don't know what they selected.
+                    pass
 
         # Build two perspective records for this turn
         for perspective in ["p1", "p2"]:
@@ -133,13 +153,11 @@ def generate_jsonl_records(
             observer_active = turn["active_pokemon"][perspective]
             opponent_active = turn["active_pokemon"][opp]
 
-            # Observer revealed team with moves so far
             observer_revealed = []
             for species in revealed_order[perspective]:
                 species_moves = sorted(list(moves_seen[perspective].get(species, set())))
                 observer_revealed.append({"species": species, "moves": species_moves})
 
-            # Opponent revealed team with any moves seen so far
             opponent_revealed = []
             for s in revealed_order[opp]:
                 s_moves = sorted(list(moves_seen[opp].get(s, set())))
@@ -165,11 +183,10 @@ def generate_jsonl_records(
                     "observer_action": actions[perspective],
                     "opponent_action": actions[opp],
                 },
-                # Target: full opponent team species (ground truth) without moves
                 "target": opponent_full_team[perspective],
             }
             records.append(record)
-        # Update previous active tracking
+
         prev_active = {
             "p1": turn["active_pokemon"]["p1"],
             "p2": turn["active_pokemon"]["p2"],
